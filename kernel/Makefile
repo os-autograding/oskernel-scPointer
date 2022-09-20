@@ -1,5 +1,5 @@
 ARCH ?= riscv64
-MODE ?= debug
+MODE ?= release
 PLATFORM ?= qemu
 SMP ?= 1
 MACHINE ?= virt
@@ -36,7 +36,7 @@ ifneq ($(ONLINE), 1)
 build_args += --offline
 endif
 
-qemu_args := -nographic -smp $(SMP) -m 8G
+qemu_args := -nographic -smp $(SMP) -m 256m
 ifeq ($(ARCH), riscv64)
 qemu_args += \
 	-machine $(MACHINE) \
