@@ -33,7 +33,7 @@ fn pack_up_user_applications() {
     let target_path = arguments.value_of("target").unwrap();
     let output_path = arguments.value_of("output").unwrap();
     let img_file = String::from(output_path) + "fat.img";
-    println!("src_path = {}\ntarget_path = {}\noutput_path = {}\nimg_file = {}", src_path, target_path, output_path, img_file);
+    //println!("src_path = {}\ntarget_path = {}\noutput_path = {}\nimg_file = {}", src_path, target_path, output_path, img_file);
     let user_apps = if arguments.is_present("bin") {
         get_app_names_from_bin_dir(src_path)
     } else {
@@ -50,14 +50,14 @@ fn pack_up_user_applications() {
     for app in user_apps {
         // 是子目录
         if app.ends_with("/") {
-            println!("user dir: {}", app.as_str());
+            //println!("user dir: {}", app.as_str());
             root.create_dir(app.as_str()).unwrap();
         } else {
             //println!("{}", format!("{}{}", target_path, app));
             let mut origin_file = File::open(format!("{}{}", target_path, app)).unwrap();
             let mut all_data: Vec<u8> = Vec::new();
             origin_file.read_to_end(&mut all_data).unwrap();
-            println!("user app: {}", app.as_str());
+            //println!("user app: {}", app.as_str());
             let mut file_in_fs = root.create_file(app.as_str()).unwrap();
             file_in_fs.write_all(all_data.as_slice()).unwrap();
         }
@@ -168,7 +168,7 @@ fn get_app_names_from_bin_dir(path: &str) -> Vec<String> {
 fn traverse_dir(file: DirEntry, target_dir: String, names: &mut Vec<String>) {
     let file_name = file.file_name().into_string().unwrap();
     if file.path().is_dir() {
-        println!("dir: {}", file.file_name().into_string().unwrap());
+        //println!("dir: {}", file.file_name().into_string().unwrap());
         //let dir_name = file.file_name().into_string().unwrap();
         names.push(format!("{}{}/", target_dir, file_name));
         for inner_entry in fs::read_dir(file.path()).unwrap() {
@@ -189,10 +189,10 @@ fn traverse_fat_dir<'a>(
     if dir_now != "" {
         print!("\t");
     }
-    println!("{:4}  {}  {}", file_size_to_str(file.len()), date_time_to_str(file.modified()), file.file_name());
+    //println!("{:4}  {}  {}", file_size_to_str(file.len()), date_time_to_str(file.modified()), file.file_name());
     // 如果是子目录，则再继续遍历
     if file.is_dir() {
-        println!("{}{}/", dir_now, file.file_name());
+        //println!("{}{}/", dir_now, file.file_name());
         let inner_dir = dir_now + file.file_name().as_str();
         for dir_entry in root.open_dir(inner_dir.as_str()).unwrap().iter() {
             let file = dir_entry.unwrap();

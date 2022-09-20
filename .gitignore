@@ -9,3 +9,5 @@ user/Cargo.lock
 os.bin
 os.bin.gz
 os-fu740.itb
+kernel-qemu
+sbi-qemu
