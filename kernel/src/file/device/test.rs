@@ -130,10 +130,21 @@ impl TestStatus {
 const CASES: &[&str] = crate::testcases::TESTCASES;
 
 lazy_static::lazy_static! {
-    //static ref TESTCASES_ITER: Mutex<Box<dyn Iterator<Item = &'static &'static str> + Send>> = Mutex::new(Box::new(FORMAT_LIBC_STATIC.into_iter().chain(FORMAT_LIBC_DYNAMIC.into_iter())));
-    //static ref TEST_STATUS: Mutex<TestStatus> = Mutex::new(TestStatus::new(&[FORMAT_LIBC_STATIC, FORMAT_LIBC_DYNAMIC].concat()));
-    static ref TESTCASES_ITER: Mutex<Box<dyn Iterator<Item = &'static &'static str> + Send>> = Mutex::new(Box::new(CASES.into_iter()));
-    static ref TEST_STATUS: Mutex<TestStatus> = Mutex::new(TestStatus::new(CASES));
+    static ref TESTCASES_ITER: Mutex<Box<dyn Iterator<Item = &'static &'static str> + Send>> = 
+        Mutex::new(Box::new(
+            FORMAT_LIBC_STATIC.into_iter()
+            .chain(FORMAT_LIBC_DYNAMIC.into_iter())
+            .chain(CASES.into_iter())
+        ));
+    static ref TEST_STATUS: Mutex<TestStatus> = 
+        Mutex::new(TestStatus::new(
+            &[
+                FORMAT_LIBC_STATIC,
+                FORMAT_LIBC_DYNAMIC,
+                CASES
+            ].concat()));
+    //static ref TESTCASES_ITER: Mutex<Box<dyn Iterator<Item = &'static &'static str> + Send>> = Mutex::new(Box::new(CASES.into_iter()));
+    //static ref TEST_STATUS: Mutex<TestStatus> = Mutex::new(TestStatus::new(CASES));
     static ref SYS_INFO: Mutex<Vec<String>> = Mutex::new(Vec::new());
 }
 
