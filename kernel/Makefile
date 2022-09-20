@@ -1,5 +1,5 @@
 ARCH ?= riscv64
-MODE ?= release
+MODE ?= debug
 PLATFORM ?= qemu
 SMP ?= 1
 MACHINE ?= virt
@@ -46,7 +46,7 @@ endif
 ifeq ($(SBI), rustsbi)
 qemu_args += -bios rustsbi-qemu.bin
 else
-qemu_args += -bios default
+qemu_args += -bios ../sbi-qemu
 endif
 
 .PHONY: build testcases-img kernel run qemu asm clean gdb-runner gdb-listener doc
