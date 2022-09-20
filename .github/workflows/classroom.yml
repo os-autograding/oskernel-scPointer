@@ -65,7 +65,7 @@ jobs:
             -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0 \
             -kernel kernel-qemu \
             -nographic \
-            -smp 4 -m 128m | tee qemu_run_output.txt
+            -smp 4 -m 1g | tee qemu_run_output.txt
       - name: Download Scripts
         run: |
           git clone $SCRIPT_REPO .github/classroom
