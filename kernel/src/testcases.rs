@@ -28,7 +28,7 @@ pub const TESTCASES: &[&str] = &[
 
     "busybox sh lua_testcode.sh", // lua 测例
     "busybox sh busybox_testcode.sh", // busybox 测例
-    //"busybox sh lmbench_testcode.sh", // lmbench 测例(见下)
+    "busybox sh lmbench_testcode.sh", // lmbench 测例(见下)
 
     /* // 很少一点 libc 测例。完整评测见 ./file/test.rs 中，需要把其中 TESTCASES_ITER 和 TEST_STATUS 的值换掉
     // "./runtest.exe -w entry-dynamic.exe argv",
