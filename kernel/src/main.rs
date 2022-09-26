@@ -1,174 +1,202 @@
-// remove std lib
+//! 程序入口为 mod arch/riscv/mod.rs 中的函数 entry ( 也是build.rs中的ENTRY(_start) ),
+//! 函数 entry 将cpu_id存到tp寄存器并设置好初始的内核栈与页表后，跳转到 start_kernel 启动
+
 #![no_std]
 #![no_main]
+#![deny(warnings)]
 #![feature(panic_info_message)]
 #![feature(default_alloc_error_handler)]
-#![allow(unaligned_references)]
+#![feature(naked_functions, asm_sym, asm_const)]
+// MemorySet 处理相交的 VmArea 时需要
+#![feature(btree_drain_filter)]
+// used in file/device/link.rs
 #![feature(const_btree_new)]
+// test.rs 输入 argv 需要
 #![feature(drain_filter)]
 
-
-// 使用定义的命令行宏   
 #[macro_use]
-mod console;
-mod device;
-pub mod interrupt;
-mod memory;
-mod fs;
-mod sbi;
-mod panic;
-mod sync;
+extern crate log;
+
+#[macro_use]
+pub mod console;
+pub mod constants;
+pub mod drivers;
+pub mod error;
+pub mod file;
+pub mod lang;
+pub mod loaders;
+pub mod memory;
+pub mod signal;
+pub mod syscall;
 pub mod task;
-pub mod runtime_err;
-pub mod elf;
-pub mod sys_call;
+pub mod testcases;
+pub mod timer;
+pub mod trap;
+pub mod utils;
+
+// #[cfg(target_arch = "riscv64")]
+#[path = "arch/riscv/mod.rs"]
+mod arch;
 
 #[macro_use]
 extern crate bitflags;
-#[macro_use]
-extern crate lazy_static; 
+
 #[macro_use]
 extern crate alloc;
-use core::arch::global_asm;
+extern crate fatfs;
+extern crate fscommon;
+extern crate lock;
 
+mod fsio {
+    pub use fscommon::{Read, Seek, Write};
+}
 
-use alloc::{rc::Rc, string::ToString};
-use riscv::register::sstatus;
-use crate::fs::filetree::INode;
-use crate::fs::filetree::DiskFileEnum;
-use crate::fs::file::FileType;
-use crate::fs::cache::cache_file;
-use crate::memory::page::get_free_page_num;
-mod virtio_impl;
+core::arch::global_asm!(include_str!("fs.S"));
 
+// use core::sync::atomic::AtomicUsize;
+// static BOOTED_CPU_NUM: AtomicUsize = AtomicUsize::new(0);
+use log::*;
 
-global_asm!(include_str!("entry.asm"));
+#[no_mangle]
+/// 主核启动OS
+pub extern "C" fn start_kernel(_arg0: usize, _arg1: usize) -> ! {
+    arch::clear_bss(); // 清空 bss 段
+    console::init_logger(crate::constants::LOG_LEVEL).unwrap();
+    memory::allocator_init(); // 初始化堆分配器和页帧分配器
+    memory::enable_kernel_page_table(); // 构造并切换到内核态页表与 MemorySet
+    trap::init(); // 设置异常/中断的入口，即 stvec
+    arch::allow_sum_access(); // 内核可以读写 USER 页表项中的数据
 
-/// 清空bss段
-fn clear_bss() {
-    extern "C" {
-        fn sbss();
-        fn ebss();
+    //trap::enable_timer_interrupt(); // 开启时钟中断
+    //timer::set_next_trigger(); // 设置时钟中断频率
+
+    // file::list_apps_names_at_root_dir(); // 展示所有用户程序的名字
+    file::list_files_at_root(); // 展示所有用户程序的名字
+    file::fs_init(); // 初始化一些不是实际文件本身但是 OS 约定需要的"文件"
+    let cpu_id = arch::get_cpu_id();
+    info!("CPU [{cpu_id}] bootstrap");
+    for other_cpu in constants::FIRST_CPU_ID..=constants::LAST_CPU_ID {
+        if other_cpu != cpu_id {
+            let _entry = arch::secondary_entry as usize;
+            // println!("other_cpu {}", other_cpu);
+            // arch::start_hart(other_cpu, memory::virt_to_phys(_entry), 0);
+        }
     }
-    let bss_start_addr = sbss as usize as *mut u8;
-    let bss_size = ebss as usize - sbss as usize;
-    unsafe {
-        core::slice::from_raw_parts_mut(bss_start_addr, bss_size).fill(0);
+
+    // let cpu_id = arch::get_cpu_id();
+    //println!("CPU [{}] is waiting", cpu_id);
+
+    // 全局初始化结束
+    if constants::SPIN_LOOP_AFTER_BOOT {
+        loop {}
+    } else {
+        task::run_tasks();
     }
-    
-    // 显示BSS段信息
-    info!("the bss section range: {:X}-{:X}, {} KB", sbss as usize, ebss as usize, bss_size / 0x1000);
 }
 
 #[no_mangle]
-pub extern "C" fn rust_main(hart_id: usize, device_tree_p_addr: usize) -> ! {
-    // // 保证仅有一个核心工作
-    #[cfg(not(debug_assertions))]
-    if hart_id != 0 {
-        sbi::hart_suspend(0x00000000, support_hart_resume as usize, 0);
+/// 其他核启动OS
+pub extern "C" fn start_kernel_secondary(_arg0: usize, _arg1: usize) -> ! {
+    memory::enable_kernel_page_table(); // 构造并切换到内核态页表与 MemorySet
+    trap::init(); // 设置异常/中断的入口，即 stvec
+    arch::allow_sum_access(); // 修改 sstatus 的 SUM 位，使内核可以读写USER页表项中的数据
+
+    //trap::enable_timer_interrupt(); // 开启时钟中断
+    //timer::set_next_trigger(); // 设置时钟中断频率
+
+    let cpu_id = arch::get_cpu_id();
+    info!("I'm CPU [{cpu_id}]");
+
+    // 全局初始化结束
+    if constants::SPIN_LOOP_AFTER_BOOT || constants::IS_SINGLE_CORE {
+        loop {}
+    } else {
+        task::run_tasks();
     }
-
-    unsafe {
-        sstatus::set_fs(sstatus::FS::Dirty);
-    }
-    
-    // 清空bss段
-    clear_bss();
-
-    // 输出设备信息
-    info!("当前核心 {}", hart_id);
-    info!("设备树地址 {:#x}", device_tree_p_addr);
-
-    // 提示信息
-    info!("Welcome to test os!");
-
-    // 开启SUM位 让内核可以访问用户空间  踩坑：  
-    // only in qemu. eg: qemu is riscv 1.10    k210 is riscv 1.9.1  
-    // in 1.10 is SUM but in 1.9.1 is PUM which is the opposite meaning with SUM
-    #[cfg(not(feature = "board_k210"))]
-    unsafe {
-        sstatus::set_sum();
-    }
-
-    // 初始化内存
-    memory::init();
-
-    // 初始化中断
-    interrupt::init();
-
-    // 初始化设备
-    device::init();
-
-    // 初始化文件系统
-    fs::init();
-
-    // 输出文件树
-    print_file_tree(INode::root());
-
-    // 创建busybox 指令副本
-    let busybox_node = INode::get(None, "busybox").expect("can't find busybox");
-    busybox_node.linkat("sh");
-    busybox_node.linkat("echo");
-    busybox_node.linkat("cat");
-    busybox_node.linkat("cp");
-    busybox_node.linkat("ls");
-    busybox_node.linkat("pwd");
-    INode::mkdir(None, "/bin", 0).expect("can't create bin directory");
-    INode::mkdir(None, "/sbin", 0).expect("can't create sbin directory");
-    busybox_node.linkat("bin/busybox");
-    // let lmbench_all = INode::get(None, "lmbench_all").expect("can't find busybox");
-    // lmbench_all.linkat("sbin/lmbench_all");
-    // lmbench_all.linkat("bin/lmbench_all");
-    // // let lmbench_all = INode::get(None, "busybox_cmd.txt").expect("can't find busybox");
-    // lmbench_all.linkat("var/tmp/XXX");
-
-    INode::root().add(INode::new("proc".to_string(), 
-        DiskFileEnum::None, FileType::Directory, None));
-
-    #[cfg(not(feature = "board_k210"))]
-    {
-        // 非k210缓冲文件
-        cache_file("busybox");
-        cache_file("lua");
-        // cache_file("lmbench_all");
-    }
-
-    // 初始化多任务
-    task::init();
-
-    // 输出剩余页表
-    debug!("剩余页表: {}", get_free_page_num());
-
-    // 调用rust api关机
-    panic!("正常关机")
 }
 
-#[allow(unused)]
-/// 暂时不使用  目前只使用单核
-extern "C" fn support_hart_resume(hart_id: usize, _param: usize) {
-    info!("核心 {} 作为辅助核心进行等待", hart_id);
-    loop {} // 进入循环
-}
+/*
+/// 是否已经有核在进行全局初始化
+//static GLOBAL_INIT_STARTED: AtomicBool = AtomicBool::new(false);
+/// 全局初始化是否已结束
+//static GLOBAL_INIT_FINISHED: AtomicBool = AtomicBool::new(false);
 
-
-// 打印目录树
-pub fn print_file_tree(node: Rc<INode>) {
-    info!("{}", node.get_pwd());
-    print_file_tree_back(node, 0);
-}
-
-// 打印目录树 - 递归
-pub fn print_file_tree_back(node: Rc<INode>, space: usize) {
-    let iter = node.clone_children();
-    let mut iter = iter.iter().peekable();
-    while let Some(sub_node) = iter.next() {
-        if iter.peek().is_none() {
-            info!("{:>2$}└──{}", "", sub_node.get_filename(), space);
-        } else {
-            info!("{:>2$}├──{}", "", sub_node.get_filename(), space);
-        }
-        if sub_node.is_dir() {
-            print_file_tree_back(sub_node.clone(), space + 3);
-        }
+/// 是否还没有核进行全局初始化，如是则返回 true
+fn can_do_global_init() -> bool {
+    // GLOBAL_INIT_STARTED.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok()
+    /* match arch::get_cpu_id() {
+        BOOTSTRAP_CPU_ID => {
+            GLOBAL_INIT_STARTED.store(true, Ordering::Release);
+            true
+        },
+        _ => false
     }
+    */
+    if GLOBAL_INIT_STARTED.load(Ordering::Acquire) == false {
+        GLOBAL_INIT_STARTED.store(true, Ordering::Release);
+        true
+    } else {
+        false
+    }
+}
+
+/// 标记那些全局只执行一次的启动步骤已完成。
+/// 内核必须由 cpu_id 等于 AP_CAN_INIT 初始值的核先启动并执行这些全局只需要一次的操作，然后其他的核才能启动
+fn mark_global_init_finished() {
+    // GLOBAL_INIT_FINISHED.compare_exchange(false, true, Ordering::Release, Ordering::Relaxed).unwrap();
+    GLOBAL_INIT_FINISHED.store(true, Ordering::Release);
+}
+
+/// 等待那些全局只执行一次的启动步骤是否完成
+fn wait_global_init_finished() {
+    while GLOBAL_INIT_FINISHED.load(Ordering::Acquire) == false {
+        spin_loop();
+    }
+}
+
+/// 确认当前核已启动(BOOTSTRAP_CPU 也需要调用)
+fn mark_bootstrap_finish() {
+    BOOTED_CPU_NUM.fetch_add(1, Ordering::Release);
+}
+
+/// 等待所有核已启动
+fn wait_all_cpu_started() {
+    while BOOTED_CPU_NUM.load(Ordering::Acquire) < constants::LAST_CPU_ID - constants::FIRST_CPU_ID + 1 && !constants::IS_SINGLE_CORE {
+        spin_loop();
+    }
+}
+*/
+
+/// 测试输出linker各段的虚存映射
+pub fn test_vm() {
+    extern "C" {
+        fn stext();
+        fn etext();
+        fn sdata();
+        fn edata();
+        fn srodata();
+        fn erodata();
+        fn sbss();
+        fn ebss();
+    }
+    println!(
+        "\
+stext = {:x}
+etext = {:x}
+sdata = {:x}
+edata = {:x}
+srodata = {:x}
+erodata = {:x}
+sbss = {:x}
+ebss = {:x}
+",
+        stext as usize,
+        etext as usize,
+        sdata as usize,
+        edata as usize,
+        srodata as usize,
+        erodata as usize,
+        sbss as usize,
+        ebss as usize,
+    );
 }
